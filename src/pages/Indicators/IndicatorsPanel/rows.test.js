@@ -8,6 +8,10 @@ import {
   displayName,
   facetsOf,
   readingsKey,
+  isFinding,
+  splitByKind,
+  kindsOf,
+  withKinds,
 } from "./rows";
 
 // Fixtures copy the server's own row builders field for field (`_catalog_row` /
@@ -287,5 +291,73 @@ describe("translated names", () => {
       rows: [glucose("loinc:glucose|Ser/Plas|Pt|Qn|QCnc", "14749-6", "5"), glucose("loinc:glucose|Bld|Pt|Qn|QCnc", "15074-8", "6")],
     });
     expect(rows.map((r) => r.code)).toEqual(["14749-6", "15074-8"]);
+  });
+});
+
+// thetahealth/mirobody-web#31: an Imaging or Pathological row is stored with
+// `kind='finding'` and every catalogue row says its kind; the list kept organs
+// with a sentence for a value (心影, 双肾) among K, ALT and LDL-C.
+describe("examination findings", () => {
+  const catalogRow = (over) => ({
+    system: "", code: "", count: 1, unit: "", first_date: "2026-03-04", last_date: "2026-03-04",
+    total: 3, day_known: true, ...over,
+  });
+  const catalog = {
+    rows: [
+      catalogRow({ indicator: "K", series: "loinc:potassium", kind: "measurement", latest_value: "4.1", unit: "mmol/L" }),
+      catalogRow({ indicator: "心影", series: "local:心影", kind: "finding", latest_value: "大小形态未见明显异常" }),
+      catalogRow({ indicator: "双肾", series: "local:双肾", kind: "finding", latest_value: "双肾大小形态正常" }),
+    ],
+  };
+
+  it("reads each catalogue row's kind", () => {
+    const rows = toTableRows(catalog);
+    expect(rows.map((r) => r.kind)).toEqual(["measurement", "finding", "finding"]);
+    expect(rows.map(isFinding)).toEqual([false, true, true]);
+  });
+
+  it("lists findings apart from analytes, each group in the order it came", () => {
+    const { measurements, findings } = splitByKind(toTableRows(catalog));
+    expect(measurements.map((r) => r.indicator)).toEqual(["K"]);
+    expect(findings.map((r) => r.indicator)).toEqual(["心影", "双肾"]);
+  });
+
+  it("keeps a finding's sentence as its latest value, with no unit", () => {
+    const [, heart] = toTableRows(catalog);
+    expect(heart).toMatchObject({ latest_value: "大小形态未见明显异常", unit: "" });
+  });
+
+  it("takes a row with no kind, as an older server sends, for a measurement", () => {
+    const rows = toTableRows(catalogEnvelope);
+    expect(rows.map((r) => r.kind)).toEqual(["", ""]);
+    expect(splitByKind(rows).findings).toEqual([]);
+  });
+
+  it("gives a searched finding the kind its catalogue row said", () => {
+    // A search answers in readings, and a reading row names no kind.
+    const searched = toTableRows({
+      rows: [
+        { indicator: "心影", series: "local:心影", value: "大小形态未见明显异常", unit: "",
+          time: "2026-03-04 00:00:00", row_id: 9, total: 1 },
+        { indicator: "K", series: "loinc:potassium", value: "4.1", unit: "mmol/L",
+          time: "2026-03-04 00:00:00", row_id: 10, total: 1 },
+      ],
+    });
+    expect(searched.map(isFinding)).toEqual([false, false]);
+    const rows = withKinds(searched, kindsOf(toTableRows(catalog)));
+    expect(rows.map(isFinding)).toEqual([true, false]);
+    // Its readings come along unchanged.
+    expect(rows[0].readings[0]).toMatchObject({ id: 9, value: "大小形态未见明显异常" });
+  });
+
+  it("leaves rows as they are when nothing is known", () => {
+    const rows = toTableRows(readingsEnvelope);
+    expect(withKinds(rows, new Map())).toBe(rows);
+    expect(withKinds(rows, undefined)).toBe(rows);
+  });
+
+  it("does not let a remembered kind override one a row carries", () => {
+    const [row] = withKinds([{ series: "s", kind: "measurement" }], new Map([["s", "finding"]]));
+    expect(row.kind).toBe("measurement");
   });
 });
