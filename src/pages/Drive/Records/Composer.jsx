@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { IconLoader2, IconX } from "@tabler/icons-react";
 import { logEntry, logSentence } from "../../../api/journal";
+import { useChartInputStore } from "../../../store/Chart/input";
 import {
   KINDS,
   NOTE_MAX,
   isNote,
+  looksLikeQuestion,
   medicationActionKey,
   SENTENCE_MAX,
   TEXT_MAX,
@@ -114,9 +116,16 @@ const SentenceOutcome = ({ outcome, t }) => {
  * else as a note in the words written. A server that cannot read a sentence (no text model, or
  * one that predates the route) drops the box back to one entry at a time with
  * a kind picker, for the rest of the session.
+ *
+ * It cannot answer anything, though — it only writes. A tester typed a
+ * question into it and the words came back "kept as a note", which reads as
+ * the box having swallowed the question. `looksLikeQuestion` (entries.js)
+ * catches that shape before the request goes out and offers the honest two
+ * ways out: cross to chat with the same words, or log them anyway.
  */
 const Composer = ({ targetUserId, onLogged }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [text, setText] = useState("");
   const [kind, setKind] = useState(KINDS[0]);
   const [note, setNote] = useState("");
@@ -127,6 +136,10 @@ const Composer = ({ targetUserId, onLogged }) => {
   const [error, setError] = useState("");
   const [sentence, setSentence] = useState(true);
   const [notice, setNotice] = useState("");
+  // Set when a submit is held back because `text` reads as a question: this
+  // box can only record, never answer, and saying so once is more honest than
+  // quietly filing the question away as a note.
+  const [questionHeld, setQuestionHeld] = useState(false);
   const inputRef = useRef(null);
 
   // The time field starts at "now", and re-stamps each time the box is opened:
@@ -145,14 +158,12 @@ const Composer = ({ targetUserId, onLogged }) => {
     setWhen("");
     setOpen(false);
     setError("");
+    setQuestionHeld(false);
   };
 
-  const submit = async () => {
-    const blocker = submitBlocker({ text, note, sentence });
-    if (blocker) {
-      setError(t(`journal_error_${blocker}`));
-      return;
-    }
+  // The actual write. Split from `submit` so "record it anyway" can call this
+  // directly without running the question check a second time.
+  const writeEntry = async () => {
     setBusy(true);
     setError("");
     const common = {
@@ -189,6 +200,36 @@ const Composer = ({ targetUserId, onLogged }) => {
     }
   };
 
+  const submit = async () => {
+    const blocker = submitBlocker({ text, note, sentence });
+    if (blocker) {
+      setError(t(`journal_error_${blocker}`));
+      return;
+    }
+    // Held back rather than written: this box can only log how the person is,
+    // and filing a question away as a silent note is how the tester's
+    // 「我最近的血压怎么样？」 went unanswered in the first place.
+    if (looksLikeQuestion(text)) {
+      setQuestionHeld(true);
+      return;
+    }
+    await writeEntry();
+  };
+
+  const recordAnyway = () => {
+    setQuestionHeld(false);
+    writeEntry();
+  };
+
+  // The chat composer reads its draft from the same store (AskUser uses it to
+  // resume a paused turn) — setting it here and crossing to /ask is the same
+  // channel, not a new one.
+  const askInChat = () => {
+    useChartInputStore.getState().setQuestion(text.trim());
+    setQuestionHeld(false);
+    navigate("/ask");
+  };
+
   const placeholder = t(sentence ? "journal_placeholder_sentence" : `journal_placeholder_${kind}`);
 
   const onKeyDown = (e) => {
@@ -212,6 +253,7 @@ const Composer = ({ targetUserId, onLogged }) => {
           onChange={(e) => {
             setText(e.target.value);
             if (e.target.value) setResult(null);
+            setQuestionHeld(false);
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
@@ -227,6 +269,20 @@ const Composer = ({ targetUserId, onLogged }) => {
           {busy ? t("journal_submitting") : t("journal_submit")}
         </button>
       </div>
+
+      {questionHeld ? (
+        <div className={styles.questionNotice} role="alert">
+          <p className={styles.questionNoticeText}>{t("journal_question_notice")}</p>
+          <div className={styles.questionNoticeActions}>
+            <button type="button" className={styles.questionNoticeAsk} onClick={askInChat}>
+              {t("journal_question_ask_in_chat")}
+            </button>
+            <button type="button" className={styles.questionNoticeRecord} onClick={recordAnyway}>
+              {t("journal_question_record_anyway")}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {notice ? <p className={styles.outcomeHint}>{notice}</p> : null}
 

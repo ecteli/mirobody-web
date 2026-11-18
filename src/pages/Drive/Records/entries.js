@@ -229,6 +229,64 @@ export const sentenceUnsupported = (error) =>
   error?.code === 503 || error?.status === 404 || error?.response?.status === 404;
 
 /**
+ * Whether `text` reads as a question rather than something to log.
+ *
+ * This box records how the person is, in their own words; it has no way to
+ * answer anything. A tester typed 「我最近的血压怎么样？」 into it and got
+ * back "kept as a note" — correct, but indistinguishable from the box having
+ * silently swallowed the question. Catching the shape of a question here, and
+ * routing it to chat instead, is cheaper than teaching the sentence endpoint
+ * to recognize one of its own entries as unanswerable.
+ *
+ * Deliberately simple and deterministic — a terminal `?`/`？`, or one of a
+ * short list of interrogative shapes per language — rather than a model
+ * call. The first cut flagged a bare 什么/多少/怎么/哪些 or a bare English
+ * "how"/"what"/"why" ANYWHERE in the text, which caught the question this was
+ * built for but also "今天没什么不舒服", "多少有点头疼", "怎么也睡不着",
+ * "吃什么都胀", and — because a substring match does not care where the word
+ * sits — "took a shower" (contains "how"), "whatever I eat" (contains
+ * "what") and "somehow tired" (contains "how"). All ordinary log lines, none
+ * of them questions. Two changes fixed it:
+ *
+ *  - Chinese counts only multi-character forms that are not plausible inside
+ *    an ordinary sentence (怎么样, 为什么, 是不是, 要不要, …), or a
+ *    sentence-final 吗/呢 — bare 什么/多少/怎么/哪些 no longer count at all.
+ *    `吗`/`呢` stay mid-word otherwise ("吗啡" morphine, "呢子" a wool fabric),
+ *    so only the very end of the sentence counts.
+ *  - English counts a wh-word or an inverted aux only at the very START of
+ *    the (trimmed) text — the position that makes "How/What/Why/Is/Are/Do/
+ *    Does/Should/Can/Could/Will …" a question in English word order. A
+ *    word-boundary match anywhere else is how "shower", "whatever" and
+ *    "somehow" got flagged for merely containing "how"/"what" mid-word.
+ *
+ * A colon still vetoes everything below the leading `?`/`？` check: "what I
+ * ate: noodles" opens with "what" but already answers itself after the
+ * colon, which is a label a person writes, not a question they are asking.
+ */
+export const looksLikeQuestion = (text) => {
+  const body = String(text || "").trim();
+  if (!body) return false;
+  if (/[?？]$/.test(body)) return true;
+  if (/[:：]/.test(body)) return false;
+
+  const zhMarkers = [
+    "怎么样", "为什么", "是不是", "有没有", "要不要", "能不能",
+    "正常吗", "正常不", "怎么办", "多少算", "什么意思",
+  ];
+  if (zhMarkers.some((m) => body.includes(m))) return true;
+  if (/[吗呢]$/.test(body)) return true;
+
+  // ですか/ますか only as the sentence's own polite question ending; なぜ/
+  // どうして only as how the sentence opens — either can otherwise appear
+  // mid-sentence without being a question.
+  if (/(ですか|ますか)$/.test(body)) return true;
+  if (/^(なぜ|どうして)/.test(body)) return true;
+
+  const lower = body.toLowerCase();
+  return /^(how|what|why|when|is|are|do|does|should|can|could|will)\b/.test(lower);
+};
+
+/**
  * Whether this entry may be submitted, and why not.
  *
  * Returns "" when it may. The reasons are tokens, translated by the caller.

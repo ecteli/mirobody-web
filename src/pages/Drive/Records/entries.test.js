@@ -7,6 +7,7 @@ import {
   isoFromLocalInput,
   kindKey,
   localInputFromDate,
+  looksLikeQuestion,
   rangeFor,
   readDays,
   readSentence,
@@ -315,6 +316,68 @@ describe("a sentence", () => {
     expect(sentenceUnsupported({ response: { status: 404 } })).toBe(true);
     expect(sentenceUnsupported({ code: 502 })).toBe(false);
     expect(sentenceUnsupported({ code: 403 })).toBe(false);
+  });
+});
+
+describe("looksLikeQuestion", () => {
+  it("catches a question mark, Chinese or ASCII", () => {
+    expect(looksLikeQuestion("我最近的血压怎么样？")).toBe(true);
+    expect(looksLikeQuestion("is this normal?")).toBe(true);
+  });
+
+  it("catches a clear interrogative with no question mark", () => {
+    expect(looksLikeQuestion("我最近血压怎么样")).toBe(true);
+    expect(looksLikeQuestion("这个是不是太高了")).toBe(true);
+    expect(looksLikeQuestion("我有没有发烧")).toBe(true);
+    expect(looksLikeQuestion("血压多少算正常")).toBe(true);
+    expect(looksLikeQuestion("我头疼吗")).toBe(true);
+    expect(looksLikeQuestion("要不要紧呢")).toBe(true);
+    expect(looksLikeQuestion("How is my blood pressure recently")).toBe(true);
+    expect(looksLikeQuestion("Should I take this with food")).toBe(true);
+    expect(looksLikeQuestion("Can I eat shrimp on this medication")).toBe(true);
+    expect(looksLikeQuestion("元気ですか")).toBe(true);
+    expect(looksLikeQuestion("薬は効いていますか")).toBe(true);
+    expect(looksLikeQuestion("なぜ頭が痛いのか")).toBe(true);
+    expect(looksLikeQuestion("どうして眠れないのか")).toBe(true);
+  });
+
+  it("does NOT trigger on an ordinary log sentence", () => {
+    // The exact cases a tester could type while just recording how they are —
+    // none of these are questions, and must go straight through as before.
+    expect(looksLikeQuestion("头疼，没发烧")).toBe(false);
+    expect(looksLikeQuestion("今天血压150/95")).toBe(false);
+    expect(looksLikeQuestion("what I ate: noodles")).toBe(false);
+    expect(looksLikeQuestion("吃了二甲双胍")).toBe(false);
+  });
+
+  it("does not trigger on a bare interrogative WORD used inside an ordinary sentence", () => {
+    // Found on review: a bare 什么/多少/怎么 or a bare English "how"/"what"
+    // anywhere in the text — not as the sentence's own question word — used
+    // to flag every one of these as a question. Only a handful of
+    // multi-character Chinese forms, a sentence-final 吗/呢, or an English
+    // wh-word/aux at the very START of the text count now.
+    expect(looksLikeQuestion("今天没什么不舒服")).toBe(false); // 什么 inside a statement
+    expect(looksLikeQuestion("多少有点头疼")).toBe(false); // 多少 used as "somewhat"
+    expect(looksLikeQuestion("怎么也睡不着")).toBe(false); // 怎么也, "no matter how"
+    expect(looksLikeQuestion("吃什么都胀")).toBe(false);
+    expect(looksLikeQuestion("我血压多少")).toBe(false); // bare 多少, no 吗/呢/？
+    expect(looksLikeQuestion("took a shower, then a headache")).toBe(false); // "how" inside "shower"
+    expect(looksLikeQuestion("whatever I eat I feel bloated")).toBe(false); // "what" inside "whatever"
+    expect(looksLikeQuestion("somehow tired all day")).toBe(false); // "how" inside "somehow"
+    expect(looksLikeQuestion("slept fine, no headache")).toBe(false);
+  });
+
+  it("is false for empty or whitespace-only text", () => {
+    expect(looksLikeQuestion("")).toBe(false);
+    expect(looksLikeQuestion("   ")).toBe(false);
+    expect(looksLikeQuestion(undefined)).toBe(false);
+  });
+
+  it("does not treat 吗/呢 mid-word as the question particle", () => {
+    // "吗啡" (morphine) and "呢子" (a wool fabric) are ordinary vocabulary;
+    // only a sentence-final 吗/呢 is the question marker.
+    expect(looksLikeQuestion("打了吗啡止痛")).toBe(false);
+    expect(looksLikeQuestion("穿了呢子大衣")).toBe(false);
   });
 });
 
