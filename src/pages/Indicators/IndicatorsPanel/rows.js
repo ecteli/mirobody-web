@@ -56,9 +56,13 @@ export const readingSourceKey = (reading) =>
 // `indicator` is LOINC's long name, what the drawer selects by; `label` is the
 // name a person reads, in the request's language, and `facets` what the code
 // measures, axis by axis (#231). The server sends each only when it has one.
+// `kind` is what the entry is: an imaging or pathology row is a `finding`, a
+// lab or device row a `measurement`. Only a catalogue row says (`_catalog_row`);
+// a reading row of either is silent, and so is an older server's catalogue.
 const emptyRow = (row) => ({
   indicator: row.indicator || "",
   label: row.label || "",
+  kind: row.kind || "",
   facets: row.facets && typeof row.facets === "object" ? row.facets : {},
   series: row.series || "",
   system: row.system || "",
@@ -106,6 +110,35 @@ const fromReadings = (rows) => {
   }
   return [...bySeries.values()];
 };
+
+/** The `kind` of an imaging or pathology row: what a report says it saw, in a
+ *  sentence (`心影` "大小形态未见明显异常"), not a number with a unit. */
+export const KIND_FINDING = "finding";
+
+/** Whether a row is an examination finding. A row with no `kind` is a
+ *  measurement, as every row was before the server sent one. */
+export const isFinding = (row) => row?.kind === KIND_FINDING;
+
+/** `{measurements, findings}`, each in the order the rows came in. */
+export const splitByKind = (rows) => {
+  const measurements = [];
+  const findings = [];
+  for (const row of rows) (isFinding(row) ? findings : measurements).push(row);
+  return { measurements, findings };
+};
+
+/** `series → kind` for the rows that name theirs. */
+export const kindsOf = (rows) =>
+  new Map(rows.filter((row) => row.series && row.kind).map((row) => [row.series, row.kind]));
+
+/** Rows with a `kind` taken from `known` (a `kindsOf` map) where they carry
+ *  none. A search answers in readings, which name no kind, so a finding found
+ *  by name would otherwise land among the analytes its catalogue row was kept
+ *  apart from. */
+export const withKinds = (rows, known) =>
+  known?.size
+    ? rows.map((row) => (row.kind || !known.has(row.series) ? row : { ...row, kind: known.get(row.series) }))
+    : rows;
 
 /** Table rows from either grain. */
 export const toTableRows = (res) => {

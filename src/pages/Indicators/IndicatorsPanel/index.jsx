@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Drawer, Spin, Empty, Input, Popconfirm, message } from "antd";
 import {
@@ -23,6 +23,10 @@ import {
   displayName,
   facetsOf,
   readingsKey,
+  isFinding,
+  splitByKind,
+  kindsOf,
+  withKinds,
 } from "./rows";
 import { flagOf } from "../../Chat/Dialog/Render/Citations/sources";
 import useIsMobile from "../../../hooks/useIsMobile";
@@ -41,6 +45,10 @@ import styles from "./index.module.scss";
  * Rows are indicators, not readings: a reading-level table (what the CN app
  * shows) makes 700 rows of "BP 130.0" that the user has to mentally group
  * before it means anything. Grouping is the page's job.
+ *
+ * Examination findings (imaging, pathology: `心影`, `双肾`, each with a
+ * sentence for a value) are listed in their own group after the measured
+ * analytes, and show their text, never a value column, unit or chart (#31).
  */
 const IndicatorsPanel = ({
   onEmptyUploadClick,
@@ -91,6 +99,11 @@ const IndicatorsPanel = ({
   }, [beneficiary_users, current_drive_user_id]);
 
   const abortRef = useRef(null);
+  // `series → kind` from the catalogue, for whose record it was read. A search
+  // answers in readings, which name no kind, so a finding found by name takes
+  // the kind its catalogue row said rather than join the analytes.
+  const kindsRef = useRef({ user: null, kinds: new Map() });
+  const findingsHeadingId = useId();
 
   const load = useCallback(
     async (keywords) => {
@@ -113,7 +126,14 @@ const IndicatorsPanel = ({
         // Both grains of the answer — the catalog and per-reading rows — are
         // folded into one row model in rows.js, which is also where the two
         // key names live. Reading them inline here is what issue #62 was.
-        setRows(toTableRows(res));
+        const known =
+          kindsRef.current.user === current_drive_user_id ? kindsRef.current.kinds : new Map();
+        const next = withKinds(toTableRows(res), known);
+        kindsRef.current = {
+          user: current_drive_user_id,
+          kinds: new Map([...known, ...kindsOf(next)]),
+        };
+        setRows(next);
         setTruncated(truncationOf(res));
         setUnavailable(false);
       } catch (error) {
@@ -251,7 +271,80 @@ const IndicatorsPanel = ({
     const label = kind === "high" ? t("cite_flag_high") : kind === "low" ? t("cite_flag_low") : kind;
     return <span className={styles.flag}>{label}</span>;
   };
-  const showRef = readings.some((reading) => reading.ref);
+  // A finding's record is its text: no number, so no range, unit or chart.
+  const selectedIsFinding = isFinding(selected);
+  const showRef = !selectedIsFinding && readings.some((reading) => reading.ref);
+
+  // Where a reading came from. Document-derived readings carry the source
+  // file's key — link straight to the original so the number can be checked
+  // against the report it came from.
+  //
+  // A button, not an <a href>: /files/ requires a token now (it used to serve
+  // anyone's health reports to anyone), and a browser cannot put a header on a
+  // navigation. See utils/protectedFile.
+  const readingSource = (reading) =>
+    reading.file_key ? (
+      <button
+        type="button"
+        className={styles.sourceLink}
+        onClick={() => handleViewSource(reading)}
+      >
+        <IconFileText size={14} /> {t("indicator_view_source")}
+      </button>
+    ) : (
+      // Was "—" for every device reading, while the 明细 tab named the same
+      // row 设备.
+      t(readingSourceKey(reading))
+    );
+
+  // Edit and delete, or save and cancel while editing. Only a reading with an
+  // id can be corrected.
+  const readingActions = (reading) =>
+    reading.id == null ? null : editingId === reading.id ? (
+      <>
+        <button
+          type="button"
+          disabled={patching}
+          onClick={() => saveEdit(reading)}
+          aria-label={t("save")}
+        >
+          <IconCheck size={14} stroke={2} />
+        </button>
+        <button
+          type="button"
+          disabled={patching}
+          onClick={() => setEditingId(null)}
+          aria-label={t("cancel")}
+        >
+          <IconX size={14} stroke={2} />
+        </button>
+      </>
+    ) : (
+      <>
+        <button
+          type="button"
+          onClick={() => {
+            setEditingId(reading.id);
+            setEditingValue(reading.printed?.value ?? reading.value ?? "");
+          }}
+          aria-label={t(selectedIsFinding ? "indicator_edit_finding" : "indicator_edit_reading")}
+        >
+          <IconPencil size={14} stroke={1.8} />
+        </button>
+        <Popconfirm
+          title={t("indicator_delete_reading_confirm")}
+          okText={t("yes")}
+          cancelText={t("cancel")}
+          onConfirm={() => deleteReading(reading)}
+        >
+          <button type="button" aria-label={t("delete")}>
+            <IconTrash size={14} stroke={1.8} />
+          </button>
+        </Popconfirm>
+      </>
+    );
+
+  const { measurements, findings } = useMemo(() => splitByKind(rows), [rows]);
 
   const total = useMemo(
     () => rows.reduce((sum, row) => sum + (Number(row.count) || 0), 0),
@@ -260,7 +353,17 @@ const IndicatorsPanel = ({
 
   // Only worth a column when something actually carries a code — otherwise it
   // is a column of em-dashes taking the width real values need.
-  const showCode = useMemo(() => rows.some((row) => row.code), [rows]);
+  const showCode = useMemo(() => measurements.some((row) => row.code), [measurements]);
+
+  const rowKey = (row) => row.series || `${row.indicator}-${row.code || ""}`;
+  // A table row opens its drawer by click or by Enter, in either group.
+  const rowProps = (row) => ({
+    onClick: () => openDetail(row),
+    tabIndex: 0,
+    onKeyDown: (event) => {
+      if (event.key === "Enter") openDetail(row);
+    },
+  });
 
   return (
     <div className={styles.panel}>
@@ -283,10 +386,16 @@ const IndicatorsPanel = ({
         </form>
         {!loading && !unavailable && rows.length > 0 && (
           <div className={styles.summary}>
-            {t("indicator_summary", {
-              indicators: rows.length,
-              readings: total,
-            })}
+            {findings.length > 0
+              ? t("indicator_summary_findings", {
+                  indicators: measurements.length,
+                  findings: findings.length,
+                  readings: total,
+                })
+              : t("indicator_summary", {
+                  indicators: rows.length,
+                  readings: total,
+                })}
             {truncated && (
               <span className={styles.partial}>
                 {" "}
@@ -328,93 +437,164 @@ const IndicatorsPanel = ({
             </div>
           )}
         </div>
-      ) : mobile ? (
-        // A phone gets one card per indicator: the table's five columns
-        // overflowed 375px, leaving only the names on screen.
-        <ul className={styles.cards}>
-          {rows.map((row) => (
-            <li key={row.series || `${row.indicator}-${row.code || ""}`}>
-              <button type="button" className={styles.card} onClick={() => openDetail(row)}>
-                <span className={styles.cardName} title={row.label ? row.indicator : undefined}>
-                  {displayName(row)}
-                </span>
-                <span className={styles.cardValue}>
-                  {row.latest_value !== "" ? (
-                    <>
-                      <span className={styles.value}>{row.latest_value}</span>
-                      {row.unit && <span className={styles.unit}>{row.unit}</span>}
-                    </>
-                  ) : (
-                    <span className={styles.muted}>—</span>
-                  )}
-                </span>
-                <span className={styles.cardMeta}>
-                  {formatDate(row.latest_time)}
-                  {row.count ? ` · ${t("cite_count", { count: row.count })}` : ""}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
       ) : (
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            {/* Explicit widths: the name column would otherwise eat half the
-                page and strand the numbers at the far right, where the eye has
-                to travel to connect them back to their row. */}
-            <colgroup>
-              <col style={{ width: "38%" }} />
-              <col style={{ width: "22%" }} />
-              <col style={{ width: "12%" }} />
-              <col style={{ width: "16%" }} />
-              {showCode && <col style={{ width: "12%" }} />}
-            </colgroup>
-            <thead>
-              <tr>
-                <th>{t("indicator")}</th>
-                <th>{t("indicator_latest_value")}</th>
-                <th>{t("indicator_records")}</th>
-                <th>{t("indicator_last_seen")}</th>
-                {showCode && <th>{t("indicator_code")}</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                  <tr
-                    key={row.series || `${row.indicator}-${row.code || ""}`}
-                    onClick={() => openDetail(row)}
-                    tabIndex={0}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") openDetail(row);
-                    }}
-                  >
-                    <td className={styles.name} title={row.label ? row.indicator : undefined}>
-                      {displayName(row)}
-                    </td>
-                    <td>
-                      {row.latest_value !== "" ? (
-                        <>
-                          <span className={styles.value}>{row.latest_value}</span>
-                          {row.unit && (
-                            <span className={styles.unit}>{row.unit}</span>
+        <>
+          {measurements.length > 0 &&
+            (mobile ? (
+              // A phone gets one card per indicator: the table's five columns
+              // overflowed 375px, leaving only the names on screen.
+              <ul className={styles.cards}>
+                {measurements.map((row) => (
+                  <li key={rowKey(row)}>
+                    <button type="button" className={styles.card} onClick={() => openDetail(row)}>
+                      <span className={styles.cardName} title={row.label ? row.indicator : undefined}>
+                        {displayName(row)}
+                      </span>
+                      <span className={styles.cardValue}>
+                        {row.latest_value !== "" ? (
+                          <>
+                            <span className={styles.value}>{row.latest_value}</span>
+                            {row.unit && <span className={styles.unit}>{row.unit}</span>}
+                          </>
+                        ) : (
+                          <span className={styles.muted}>—</span>
+                        )}
+                      </span>
+                      <span className={styles.cardMeta}>
+                        {formatDate(row.latest_time)}
+                        {row.count ? ` · ${t("cite_count", { count: row.count })}` : ""}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  {/* Explicit widths: the name column would otherwise eat half the
+                      page and strand the numbers at the far right, where the eye has
+                      to travel to connect them back to their row. */}
+                  <colgroup>
+                    <col style={{ width: "38%" }} />
+                    <col style={{ width: "22%" }} />
+                    <col style={{ width: "12%" }} />
+                    <col style={{ width: "16%" }} />
+                    {showCode && <col style={{ width: "12%" }} />}
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>{t("indicator")}</th>
+                      <th>{t("indicator_latest_value")}</th>
+                      <th>{t("indicator_records")}</th>
+                      <th>{t("indicator_last_seen")}</th>
+                      {showCode && <th>{t("indicator_code")}</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {measurements.map((row) => (
+                      <tr key={rowKey(row)} {...rowProps(row)}>
+                        <td className={styles.name} title={row.label ? row.indicator : undefined}>
+                          {displayName(row)}
+                        </td>
+                        <td>
+                          {row.latest_value !== "" ? (
+                            <>
+                              <span className={styles.value}>{row.latest_value}</span>
+                              {row.unit && (
+                                <span className={styles.unit}>{row.unit}</span>
+                              )}
+                            </>
+                          ) : (
+                            <span className={styles.muted}>—</span>
                           )}
-                        </>
-                      ) : (
-                        <span className={styles.muted}>—</span>
-                      )}
-                    </td>
-                    <td>{row.count || "—"}</td>
-                    <td className={styles.muted}>{formatDate(row.latest_time)}</td>
-                    {showCode && (
-                      <td className={`${styles.muted} ${styles.code}`}>
-                        {codeLabel(row) || "—"}
-                      </td>
-                    )}
-                  </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                        </td>
+                        <td>{row.count || "—"}</td>
+                        <td className={styles.muted}>{formatDate(row.latest_time)}</td>
+                        {showCode && (
+                          <td className={`${styles.muted} ${styles.code}`}>
+                            {codeLabel(row) || "—"}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+
+          {/* Imaging and pathology: an organ and what the report saw there,
+              in a sentence. Among K and ALT they read as prose "indicators";
+              apart, with the sentence where a value would be, they read as
+              what they are. No unit and no code column: a finding has neither. */}
+          {findings.length > 0 && (
+            <section
+              className={`${styles.group} ${measurements.length > 0 ? styles.groupAfter : ""}`}
+              aria-labelledby={findingsHeadingId}
+            >
+              <div className={styles.groupHead}>
+                <h3 id={findingsHeadingId} className={styles.groupTitle}>
+                  {t("indicator_findings")}
+                </h3>
+                <p className={styles.groupHint}>{t("indicator_findings_hint")}</p>
+              </div>
+              {mobile ? (
+                <ul className={styles.cards}>
+                  {findings.map((row) => (
+                    <li key={rowKey(row)}>
+                      <button
+                        type="button"
+                        className={`${styles.card} ${styles.findingCard}`}
+                        onClick={() => openDetail(row)}
+                      >
+                        <span className={styles.cardName} title={row.label ? row.indicator : undefined}>
+                          {displayName(row)}
+                        </span>
+                        <span className={styles.cardText}>{row.latest_value || "—"}</span>
+                        <span className={styles.cardMeta}>
+                          {formatDate(row.latest_time)}
+                          {row.count ? ` · ${t("cite_count", { count: row.count })}` : ""}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className={styles.tableWrap}>
+                  <table className={`${styles.table} ${styles.findingTable}`}>
+                    <colgroup>
+                      <col style={{ width: "24%" }} />
+                      <col style={{ width: "48%" }} />
+                      <col style={{ width: "12%" }} />
+                      <col style={{ width: "16%" }} />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>{t("indicator_finding_item")}</th>
+                        <th>{t("indicator_finding")}</th>
+                        <th>{t("indicator_records")}</th>
+                        <th>{t("indicator_last_seen")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {findings.map((row) => (
+                        <tr key={rowKey(row)} {...rowProps(row)}>
+                          <td className={styles.name} title={row.label ? row.indicator : undefined}>
+                            {displayName(row)}
+                          </td>
+                          <td className={styles.findingText}>
+                            {row.latest_value || <span className={styles.muted}>—</span>}
+                          </td>
+                          <td>{row.count || "—"}</td>
+                          <td className={styles.muted}>{formatDate(row.latest_time)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
+        </>
       )}
 
       <Drawer
@@ -429,8 +609,13 @@ const IndicatorsPanel = ({
         {selected && (
           <div className={styles.detail}>
             {/* The current value answers the question the user clicked to ask;
-                the history table below answers "and how did it get there". */}
-            {readings[0] && (
+                the history table below answers "and how did it get there".
+                A finding's answer is a sentence, read as one, not set as a
+                32px figure with a unit. */}
+            {readings[0] && selectedIsFinding && (
+              <p className={styles.latestText}>{readings[0].value || "—"}</p>
+            )}
+            {readings[0] && !selectedIsFinding && (
               <div className={styles.latest}>
                 <span className={styles.latestValue}>{readings[0].value}</span>
                 {(readings[0].unit || selected.unit) && (
@@ -484,7 +669,7 @@ const IndicatorsPanel = ({
               )}
             </dl>
 
-            {!readingsLoading && (
+            {!readingsLoading && !selectedIsFinding && (
               <TrendChart
                 readings={readings}
                 unit={readings[0]?.unit || selected.unit}
@@ -498,6 +683,42 @@ const IndicatorsPanel = ({
               </div>
             ) : readings.length === 0 ? (
               <Empty description={t("indicator_no_data")} />
+            ) : selectedIsFinding ? (
+              // A finding's records are sentences: each takes the drawer's
+              // width, with its day, source and actions on a line beneath.
+              // In table columns beside those, a 327px phone drawer left the
+              // sentence three characters a line.
+              <ul className={styles.findingRecords}>
+                {readings.map((reading, index) => (
+                  <li key={`${reading.id ?? reading.time}-${index}`}>
+                    <div className={styles.findingText}>
+                      {editingId === reading.id ? (
+                        // Corrected as text. Enter saves, as in the value
+                        // field; Shift+Enter breaks the line.
+                        <Input.TextArea
+                          autoFocus
+                          autoSize={{ minRows: 2, maxRows: 6 }}
+                          value={editingValue}
+                          disabled={patching}
+                          onChange={(e) => setEditingValue(e.target.value)}
+                          onPressEnter={(e) => {
+                            if (e.shiftKey || e.nativeEvent.isComposing) return;
+                            e.preventDefault();
+                            saveEdit(reading);
+                          }}
+                        />
+                      ) : (
+                        reading.value || <span className={styles.muted}>—</span>
+                      )}
+                    </div>
+                    <div className={styles.findingRecordMeta}>
+                      <span className={styles.code}>{formatDate(reading.time)}</span>
+                      <span>{readingSource(reading)}</span>
+                      {isOwnRecord && <span className={styles.rowActions}>{readingActions(reading)}</span>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
             ) : (
               // Scrolls on its own, as the list's table does: a document's
               // readings add a range and a source column, 492px in a 327px drawer
@@ -547,27 +768,7 @@ const IndicatorsPanel = ({
                           {formatTime(reading.time)}
                         </td>
                         <td className={styles.muted}>
-                          {/* Document-derived readings carry the source file's
-                              key — link straight to the original so the number
-                              can be checked against the report it came from.
-
-                              A button, not an <a href>: /files/ requires a token
-                              now (it used to serve anyone's health reports to
-                              anyone), and a browser cannot put a header on a
-                              navigation. See utils/protectedFile. */}
-                          {reading.file_key ? (
-                            <button
-                              type="button"
-                              className={styles.sourceLink}
-                              onClick={() => handleViewSource(reading)}
-                            >
-                              <IconFileText size={14} /> {t("indicator_view_source")}
-                            </button>
-                          ) : (
-                            // Was "—" for every device reading, while the
-                            // 明细 tab named the same row 设备.
-                            t(readingSourceKey(reading))
-                          )}
+                          {readingSource(reading)}
                           {/* The source column is where what the report printed
                               shows: the value column is in the series' unit. */}
                           {reading.converted && reading.printed ? (
@@ -578,55 +779,7 @@ const IndicatorsPanel = ({
                           ) : null}
                         </td>
                         {isOwnRecord && (
-                          <td className={styles.rowActions}>
-                            {reading.id != null &&
-                              (editingId === reading.id ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    disabled={patching}
-                                    onClick={() => saveEdit(reading)}
-                                    aria-label={t("save")}
-                                  >
-                                    <IconCheck size={14} stroke={2} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={patching}
-                                    onClick={() => setEditingId(null)}
-                                    aria-label={t("cancel")}
-                                  >
-                                    <IconX size={14} stroke={2} />
-                                  </button>
-                                </>
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingId(reading.id);
-                                      setEditingValue(reading.printed?.value ?? reading.value ?? "");
-                                    }}
-                                    aria-label={t("indicator_edit_reading")}
-                                  >
-                                    <IconPencil size={14} stroke={1.8} />
-                                  </button>
-                                  <Popconfirm
-                                    title={t("indicator_delete_reading_confirm")}
-                                    okText={t("yes")}
-                                    cancelText={t("cancel")}
-                                    onConfirm={() => deleteReading(reading)}
-                                  >
-                                    <button
-                                      type="button"
-                                      aria-label={t("delete")}
-                                    >
-                                      <IconTrash size={14} stroke={1.8} />
-                                    </button>
-                                  </Popconfirm>
-                                </>
-                              ))}
-                          </td>
+                          <td className={styles.rowActions}>{readingActions(reading)}</td>
                         )}
                       </tr>
                     ))}
