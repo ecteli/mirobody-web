@@ -32,6 +32,22 @@ const fileResponse = (bytes, contentType) => ({
   arrayBuffer: async () => bytes.slice().buffer,
 });
 
+// Enough of `document` for a download: every anchor clicked is recorded with
+// its href, its name and whether it was in the document when clicked.
+const makeDocument = (clicked) => {
+  const children = new Set();
+  return {
+    createElement: () => {
+      const a = {
+        click: () => clicked.push({ href: a.href, download: a.download, attached: children.has(a) }),
+        remove: () => children.delete(a),
+      };
+      return a;
+    },
+    body: { appendChild: (a) => children.add(a) },
+  };
+};
+
 // What a fetch whose answer never comes does: nothing, until it is aborted.
 const untilAborted = (signal) =>
   new Promise((_, reject) => {
@@ -124,6 +140,7 @@ describe("protectedFile", () => {
         fileResponse(encode("<svg xmlns='http://www.w3.org/2000/svg'/>"), "image/svg+xml"),
       );
       vi.stubGlobal("window", { open: () => ({ location: "" }) });
+      vi.stubGlobal("document", makeDocument([]));
       vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
       vi.stubGlobal("Blob", class {
         constructor(parts, opts) { types.push(opts?.type); }
@@ -147,6 +164,70 @@ describe("protectedFile", () => {
 
       await openProtectedFile("uploads/report.pdf", "report.pdf");
       expect(types[0]).toBe("application/pdf");
+    });
+
+    // A tab pointed at an octet-stream blob stayed on about:blank and saved
+    // nothing for an .xlsx (Chrome 158, thetahealth/mirobody#341).
+    describe("a type that does not render in place", () => {
+      let clicked;
+      let types;
+      let open;
+
+      beforeEach(() => {
+        localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
+        clicked = [];
+        types = [];
+        open = vi.fn(() => ({ location: "" }));
+        vi.stubGlobal("window", { open });
+        vi.stubGlobal("document", makeDocument(clicked));
+        vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
+        vi.stubGlobal("Blob", class {
+          constructor(parts, opts) { types.push(opts?.type); }
+        });
+        vi.stubGlobal("setTimeout", () => 0);
+      });
+
+      it("downloads under the file's own name and opens no tab", async () => {
+        vi.stubGlobal("fetch", async () =>
+          fileResponse(encode("PK\u0003\u0004"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        );
+
+        const reason = await openProtectedFile("web_uploads/3a91.xlsx", "you_lab_results_en_2025-03.xlsx");
+
+        expect(reason).toBeNull();
+        expect(open).not.toHaveBeenCalled();
+        expect(types).toEqual(["application/octet-stream"]);
+        expect(clicked).toEqual([{ href: "blob:x", download: "you_lab_results_en_2025-03.xlsx", attached: true }]);
+      });
+
+      it("names the download after the key when no name is given", async () => {
+        vi.stubGlobal("fetch", async () => fileResponse(encode("PK\u0003\u0004"), "application/octet-stream"));
+
+        await openProtectedFile("/files/web_uploads/3a91.xlsx?v=1");
+
+        expect(clicked[0].download).toBe("3a91.xlsx");
+      });
+
+      it("still refuses a 200 index.html, and downloads nothing", async () => {
+        vi.stubGlobal("fetch", async () => fileResponse(INDEX_HTML, "text/html; charset=utf-8"));
+
+        expect(await openProtectedFile("uploads/a.xlsx", "a.xlsx")).toBe("file_view_not_file");
+        expect(clicked).toEqual([]);
+      });
+    });
+
+    it("downloads a pdf under its name when the popup is blocked", async () => {
+      localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
+      const clicked = [];
+      vi.stubGlobal("window", { open: () => null });
+      vi.stubGlobal("document", makeDocument(clicked));
+      vi.stubGlobal("fetch", async () => fileResponse(PDF, "application/pdf"));
+      vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
+      vi.stubGlobal("Blob", class { constructor() {} });
+      vi.stubGlobal("setTimeout", () => 0);
+
+      expect(await openProtectedFile("uploads/a.pdf", "report.pdf")).toBeNull();
+      expect(clicked).toEqual([{ href: "blob:x", download: "report.pdf", attached: true }]);
     });
 
     it("opens the tab before awaiting, or the popup blocker eats it", async () => {
