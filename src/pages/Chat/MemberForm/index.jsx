@@ -10,9 +10,10 @@ import { useAccountStore } from "../../../store/account";
 import api from "../../../api";
 import { message } from "antd";
 import consola from "consola";
+import { asksFamilyNameFirst, fullName } from "../../../utils/personName";
 
 function MemberForm({ onClose }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const fetchBeneficiaryUsers = useAccountStore(
     (state) => state.fetchBeneficiaryUsers,
   );
@@ -105,7 +106,7 @@ function MemberForm({ onClose }) {
       if (loading) return;
       setLoading(true);
       if (validateForm()) {
-        const name = `${formData.firstName} ${formData.lastName}`.trim();
+        const name = fullName(formData.firstName, formData.lastName);
         const birth = formData.dateOfBirth
           ? dayjs(formData.dateOfBirth, "MM/DD/YYYY").format("YYYY-MM-DD")
           : "";
@@ -145,6 +146,30 @@ function MemberForm({ onClose }) {
     });
   };
 
+  // 姓 before 名 where the name is written that way (#339).
+  const firstNameField = (
+    <FormItemInput
+      key="firstName"
+      label={t("first_name")}
+      required
+      onChange={onChangeFirstName}
+      value={formData.firstName}
+      error={errors.firstName}
+      errorMessage={t("form_error_required")}
+    />
+  );
+  const lastNameField = (
+    <FormItemInput
+      key="lastName"
+      label={t("last_name")}
+      required
+      onChange={onChangeLastName}
+      value={formData.lastName}
+      error={errors.lastName}
+      errorMessage={t("form_error_required")}
+    />
+  );
+
   return (
     <div className={styles.member_form} onClick={(e) => e.stopPropagation()}>
       <div className={styles.header}>
@@ -152,22 +177,9 @@ function MemberForm({ onClose }) {
         <div className={styles.desc}>{t("add_member_desc")}</div>
       </div>
       <div className={styles.content}>
-        <FormItemInput
-          label={t("first_name")}
-          required
-          onChange={onChangeFirstName}
-          value={formData.firstName}
-          error={errors.firstName}
-          errorMessage={t("form_error_required")}
-        />
-        <FormItemInput
-          label={t("last_name")}
-          required
-          onChange={onChangeLastName}
-          value={formData.lastName}
-          error={errors.lastName}
-          errorMessage={t("form_error_required")}
-        />
+        {asksFamilyNameFirst(i18n.language)
+          ? [lastNameField, firstNameField]
+          : [firstNameField, lastNameField]}
         <FormItemInput
           label={t("relationship")}
           required

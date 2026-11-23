@@ -74,6 +74,22 @@ const extensionOf = (name = "") => {
   return dot === -1 ? "" : clean.slice(dot + 1).toLowerCase();
 };
 
+// The last path segment of a key or URL, for a download with no name given.
+const baseNameOf = (keyOrUrl = "") =>
+  String(keyOrUrl).split("?")[0].split("#")[0].split("/").pop() || "download";
+
+// A download of `url` named `name`. In the document while clicked: Firefox
+// ignores a click on a detached anchor.
+const saveAs = (url, name) => {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
+
 /**
  * Whether a 200 body is the file asked for, or a page standing in for it.
  *
@@ -107,11 +123,18 @@ export const resolveFileUrl = (keyOrUrl) => {
 };
 
 /**
- * Fetch a protected file and show it in a new tab.
+ * Fetch a protected file and show it in a new tab, or save it when it is a
+ * type that does not render in place.
  *
  * The tab is opened SYNCHRONOUSLY, before the await. Opening it afterwards is
  * a popup-blocker trigger in every browser, because by then the call is no
  * longer attributable to the user's click.
+ *
+ * A type outside INLINE_TYPES gets no tab at all. Pointing a tab at an
+ * `application/octet-stream` blob left it on about:blank with nothing in the
+ * downloads folder for an .xlsx (Chrome 158; thetahealth/mirobody#341): a
+ * blob navigation carries no file name, so the browser had nothing to save it
+ * as. An `<a download>` names the file and needs no tab.
  *
  * @returns {Promise<null|string>} null on success, else a reason key for i18n.
  */
@@ -119,7 +142,9 @@ export const openProtectedFile = async (keyOrUrl, fileName = "") => {
   const token = localStorage.getItem(ACCESS_TOKEN);
   if (!token) return "file_view_unauthorized";
 
-  const tab = window.open("", "_blank");
+  const ext = extensionOf(fileName || keyOrUrl);
+  const inline = Boolean(INLINE_TYPES[ext]);
+  const tab = inline ? window.open("", "_blank") : null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FILE_FETCH_TIMEOUT_MS);
 
@@ -141,7 +166,6 @@ export const openProtectedFile = async (keyOrUrl, fileName = "") => {
     // Still under the signal: a body that stalls after the headers leaves the
     // tab as blank as headers that never come.
     const bytes = new Uint8Array(await response.arrayBuffer());
-    const ext = extensionOf(fileName || keyOrUrl);
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
     if (!isTheFile(ext, contentType, bytes)) {
       if (tab) tab.close();
@@ -154,12 +178,9 @@ export const openProtectedFile = async (keyOrUrl, fileName = "") => {
     if (tab) {
       tab.location = url;
     } else {
-      // Popup blocked despite the synchronous open: fall back to a download,
-      // which does not need a tab.
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName || "download";
-      a.click();
+      // Not a type to render, or the popup was blocked despite the
+      // synchronous open: save it under its own name, which needs no tab.
+      saveAs(url, fileName || baseNameOf(keyOrUrl));
     }
 
     // Long enough for the tab to load; the blob is held by the browser until
