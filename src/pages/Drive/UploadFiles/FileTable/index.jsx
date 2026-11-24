@@ -65,7 +65,22 @@ const FileTable = () => {
   // A failed row says why: the server stores the reason on the row (`error`),
   // and the page showed only 处理失败, so an upload that waited on a local model
   // still downloading read like any other failure (thetahealth/mirobody#275).
-  const renderStatus = (status, reason = "") => {
+  // A finished file that left no reading is told apart from one whose
+  // readings were stored, with the server's reason when it knows one
+  // (`notice`): a photo read 已处理 over nothing (thetahealth/mirobody#338).
+  const renderStatus = (status, reason = "", item = {}) => {
+    if (status === "complete" && item.no_readings) {
+      return (
+        <div className={styles.failedContainer}>
+          <div className={`${styles.badge} ${styles.badgeYellow} ${styles.badgeFit}`}>{t("no_readings")}</div>
+          {item.notice ? (
+            <span className={styles.failedReason} title={item.notice}>
+              {item.notice}
+            </span>
+          ) : null}
+        </div>
+      );
+    }
     switch (status) {
       case "uploading":
         return (
@@ -254,7 +269,7 @@ const FileTable = () => {
           {item.file_type ? item.file_type.toUpperCase() : "-"}
         </td>
         <td className={styles.tdSize}>{item.show_file_size}</td>
-        <td className={styles.tdStatus}>{renderStatus(item.upload_status, item.error)}</td>
+        <td className={styles.tdStatus}>{renderStatus(item.upload_status, item.error, item)}</td>
         <td className={styles.tdActions}>{renderActions(item)}</td>
       </tr>
     );
@@ -279,7 +294,7 @@ const FileTable = () => {
         <span>{dayjs(item.upload_time).format("YYYY-MM-DD HH:mm")}</span>
       </div>
       <div className={styles.cardFooter}>
-        {renderStatus(item.upload_status, item.error)}
+        {renderStatus(item.upload_status, item.error, item)}
         {renderActions(item)}
       </div>
     </div>

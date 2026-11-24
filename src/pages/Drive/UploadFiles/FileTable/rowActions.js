@@ -5,7 +5,10 @@
 // ends, only this page's own row, whose id is the upload's message id. It is
 // cancelled, not deleted: the server records the cancel and files nothing.
 // A file the server lists as `processing` is having its readings extracted;
-// deleting it stops them from being kept. A failed file can be read again.
+// deleting it stops them from being kept. A failed file can be read again,
+// and so can one that left no reading: a photo answered by a vision model
+// that does not read images is read again once the model is replaced
+// (thetahealth/mirobody#338).
 
 const settled = (status) => status === "complete" || status === "failed";
 
@@ -18,6 +21,7 @@ export const rowActions = (row) => {
     case "failed":
       return ["reprocess", "delete"];
     case "complete":
+      if (row.no_readings) return ["view", "reprocess", "delete"];
       // only files that produced readings carry a date_source
       return row.date_source ? ["view", "set_report_date", "delete"] : ["view", "delete"];
     default:

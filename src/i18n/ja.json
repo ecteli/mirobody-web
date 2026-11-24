@@ -108,6 +108,7 @@
   "view_all": "すべて表示",
   "data_cleaning": "データクリーニング",
   "processed": "処理済み",
+  "no_readings": "指標なし",
   "indicators": "指標",
   "value": "値",
   "related_organs": "関連臓器",

@@ -24,6 +24,14 @@ describe("rowActions", () => {
     expect(rowActions(null)).toEqual([]);
   });
 
+  it("offers to read a file that left no reading again, and asks it no date", () => {
+    // thetahealth/mirobody#338: a photo answered by a vision model that does
+    // not read images is read again once the model is replaced.
+    expect(rowActions({ upload_status: "complete", no_readings: true, date_source: "upload_time" })).toEqual([
+      "view", "reprocess", "delete",
+    ]);
+  });
+
   it("asks again only while the server lists a file as processing", () => {
     expect(hasProcessingRows([{ upload_status: "complete" }, { upload_status: "processing" }])).toBe(true);
     expect(hasProcessingRows([{ isUploading: true, upload_status: "processing" }])).toBe(false);

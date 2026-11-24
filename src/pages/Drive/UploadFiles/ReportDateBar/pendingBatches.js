@@ -19,7 +19,9 @@ export function pendingBatches(pendingDates = {}) {
   }
   const batches = [];
   for (const [sessionId, entries] of bySession) {
-    const pending = entries.filter((e) => needsDateConfirm(e));
+    // A file whose extraction finished with no reading has nothing to date;
+    // the probe's upload-time stand-in still asked (thetahealth/mirobody#338).
+    const pending = entries.filter((e) => needsDateConfirm(e) && !(e.done && e.indicators_count === 0));
     if (pending.length === 0) continue;
     const candidates = [
       ...new Set(

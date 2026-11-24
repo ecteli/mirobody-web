@@ -194,6 +194,11 @@ tbody tr:last-child {
   color: var(--color-success-text);
 }
 
+// A badge in a column of its own reason: its own width, not the column's.
+.badgeFit {
+  align-self: flex-start;
+}
+
 .statusContainer {
   display: flex;
   align-items: center;
