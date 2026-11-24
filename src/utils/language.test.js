@@ -31,7 +31,10 @@ describe("getLanguage", () => {
   };
 
   beforeEach(() => vi.resetModules());
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
 
   it.each([
     ["ja-JP", "ja"],
@@ -51,8 +54,15 @@ describe("getLanguage", () => {
     expect(await load({ nav })).toBe(expected);
   });
 
-  it("falls back to Russian for a language we do not ship", async () => {
+  it("keeps the existing English fallback when no default is configured", async () => {
+    expect(await load({ nav: "fi-FI" })).toBe("en");
+  });
+
+  it("allows a self-hosted build to choose its fallback without changing browser matching", async () => {
+    vi.stubEnv("VITE_DEFAULT_LANGUAGE", "ru");
     expect(await load({ nav: "fi-FI" })).toBe("ru");
+    expect(await load({ nav: "en-US" })).toBe("en");
+    expect(await load({ nav: "ru-RU" })).toBe("ru");
   });
 
   it("honours ?lang= even when spelled with a region or script", async () => {
