@@ -36,6 +36,8 @@ describe("getLanguage", () => {
   it.each([
     ["ja-JP", "ja"],
     ["ja", "ja"],
+    ["ru-RU", "ru"],
+    ["ru", "ru"],
     ["en-GB", "en"],
     ["zh-CN", "zh-CN"],
     ["zh-SG", "zh-CN"],
@@ -49,12 +51,13 @@ describe("getLanguage", () => {
     expect(await load({ nav })).toBe(expected);
   });
 
-  it("falls back to English for a language we do not ship", async () => {
-    expect(await load({ nav: "fi-FI" })).toBe("en");
+  it("falls back to Russian for a language we do not ship", async () => {
+    expect(await load({ nav: "fi-FI" })).toBe("ru");
   });
 
   it("honours ?lang= even when spelled with a region or script", async () => {
     expect(await load({ url: "https://app.example/?lang=ja-JP", nav: "en-US" })).toBe("ja");
+    expect(await load({ url: "https://app.example/?lang=ru-RU", nav: "en-US" })).toBe("ru");
     expect(await load({ url: "https://app.example/?lang=zh-Hant", nav: "en-US" })).toBe("zh-TW");
   });
 

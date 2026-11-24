@@ -17,11 +17,18 @@ import device from "current-device";
 import { notification, message, ConfigProvider } from "antd";
 import React, { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import i18nextInstance from "i18next";
 import { NotificationContext } from "./context/index.js";
 import zhCN from "antd/locale/zh_CN";
+import zhTW from "antd/locale/zh_TW";
+import jaJP from "antd/locale/ja_JP";
 import enUS from "antd/locale/en_US";
+import ruRU from "antd/locale/ru_RU";
 import { LANGUAGE_CODE } from "./enum/lang.js";
 import "dayjs/locale/zh-cn";
+import "dayjs/locale/zh-tw";
+import "dayjs/locale/ja";
+import "dayjs/locale/ru";
 import dayjs from "dayjs";
 import timezone from "dayjs/plugin/timezone";
 import utc from "dayjs/plugin/utc";
@@ -50,6 +57,19 @@ dayjs.extend(timezone);
 /* initialize i18n */
 initializeI18n();
 
+const syncDayjsLocale = (language) => {
+  const locale = {
+    [LANGUAGE_CODE.EN]: "en",
+    [LANGUAGE_CODE.RU]: "ru",
+    [LANGUAGE_CODE.ZH_CN]: "zh-cn",
+    [LANGUAGE_CODE.ZH_TW]: "zh-tw",
+    [LANGUAGE_CODE.JA]: "ja",
+  }[language] || "ru";
+  dayjs.locale(locale);
+};
+syncDayjsLocale(i18nextInstance.resolvedLanguage || i18nextInstance.language);
+i18nextInstance.on("languageChanged", syncDayjsLocale);
+
 /* initialize eruda - dynamic import to avoid bundling in production */
 if (
   (import.meta.env.VITE_ENV || "").includes("test") &&
@@ -68,8 +88,14 @@ export default function App() {
   const _messageApi = useMemo(() => messageApi, [messageApi]);
 
   const locale = useMemo(() => {
-    return i18n.language === LANGUAGE_CODE.ZH_CN ? zhCN : enUS;
-  }, [i18n.language]);
+    return {
+      [LANGUAGE_CODE.EN]: enUS,
+      [LANGUAGE_CODE.RU]: ruRU,
+      [LANGUAGE_CODE.ZH_CN]: zhCN,
+      [LANGUAGE_CODE.ZH_TW]: zhTW,
+      [LANGUAGE_CODE.JA]: jaJP,
+    }[i18n.resolvedLanguage || i18n.language] || ruRU;
+  }, [i18n.language, i18n.resolvedLanguage]);
 
   return (
     <ConfigProvider locale={locale} theme={theme}>

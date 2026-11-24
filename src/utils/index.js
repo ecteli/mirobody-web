@@ -67,7 +67,9 @@ export const getLanguage = () => {
   if (isCnEnvironment()) {
     return LANGUAGE_CODE.ZH_CN;
   }
-  return LANGUAGE_CODE.EN;
+  // Russian is the default for users without a saved or supported browser
+  // preference; explicit English and other shipped browser languages remain.
+  return LANGUAGE_CODE.RU;
 };
 
 /* is Text File */
