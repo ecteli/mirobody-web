@@ -29,6 +29,19 @@ describe("pendingBatches", () => {
     expect(b[0].pending.map((p) => p.file_key)).toEqual(["c"]);
   });
 
+  it("a file whose extraction finished with no reading is not asked for a date", () => {
+    // thetahealth/mirobody#338: a photo the vision model did not read.
+    const b = pendingBatches({
+      p: v("p", "S", "upload_time", "2026-11-23 10:00:00", { done: true, indicators_count: 0 }),
+      q: v("q", "S", "upload_time", "2026-11-23 10:00:00", { done: false }),
+    });
+    expect(b).toHaveLength(1);
+    expect(b[0].pending.map((e) => e.file_key)).toEqual(["q"]);
+    expect(pendingBatches({
+      p: v("p", "S", "upload_time", "2026-11-23 10:00:00", { done: true, indicators_count: 0 }),
+    })).toEqual([]);
+  });
+
   it("issue case 5: a whole selection without a date → a bar with no candidate (the picker is the answer)", () => {
     const b = pendingBatches({
       x: v("x", "S", "upload_time", "2026-09-03 12:01:00"),

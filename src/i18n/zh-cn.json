@@ -108,6 +108,7 @@
   "view_all": "查看所有",
   "data_cleaning": "数据清洗",
   "processed": "已处理",
+  "no_readings": "未读出指标",
   "indicators": "指标",
   "value": "数值",
   "related_organs": "相关器官",

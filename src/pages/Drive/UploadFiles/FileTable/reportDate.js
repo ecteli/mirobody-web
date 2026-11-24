@@ -8,8 +8,10 @@
 // did not come out" look identical to it. So the question is asked here, with
 // the sibling dates as one-click answers.
 
+// A file that left no reading owes none: a row filed before the server
+// dropped the probe's date still carries it (thetahealth/mirobody#338).
 export function needsDateConfirm(file) {
-  return !!file && file.date_source === "upload_time" && !file.date_confirmed;
+  return !!file && file.date_source === "upload_time" && !file.date_confirmed && !file.no_readings;
 }
 
 // "2025-08-15 00:00:00" → "2025-08-15". Empty when the file carries no date

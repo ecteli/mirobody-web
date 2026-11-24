@@ -11,6 +11,9 @@ describe("reportDate", () => {
     expect(needsDateConfirm({ date_source: "upload_time", date_confirmed: true })).toBe(false);
     expect(needsDateConfirm({ date_source: "extracted" })).toBe(false);
     expect(needsDateConfirm({ date_source: "manual" })).toBe(false);
+    // thetahealth/mirobody#338: a row that left no reading, filed before the
+    // server dropped the probe's date
+    expect(needsDateConfirm({ date_source: "upload_time", no_readings: true })).toBe(false);
     // files extracted before the label existed, or with no readings: nothing to ask
     expect(needsDateConfirm({})).toBe(false);
     expect(needsDateConfirm(null)).toBe(false);
