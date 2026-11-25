@@ -165,7 +165,28 @@ class WebSocketManager {
     // leader to report that user's socket open (see ensureConnected).
     this.connectResolvers = new Map();
 
+    // Set by cleanup(): the channels are closed and the elector is dead.
+    this.closed = false;
+
     // Initialize broadcast-channel (global, not per-connection)
+    this.initBroadcastChannel();
+  }
+
+  /**
+   * Make a manager that cleanup() shut down usable again.
+   *
+   * cleanup() runs on `pagehide`, which is not only an unload: a page going
+   * into the back-forward cache gets it too, and comes back with this same
+   * instance. Its socket still reopened (the dead elector's awaitLeadership()
+   * hands back the promise it resolved the first time), but `isLeader` stayed
+   * false, so sendMessage passed every message to a closed channel and
+   * reported it sent. The upload showed as started and the server never heard
+   * of it (thetahealth/mirobody#361). Called at each way into a socket rather
+   * than on `pageshow`, so nothing depends on which events a browser sends.
+   */
+  reopen() {
+    if (!this.closed) return;
+    this.closed = false;
     this.initBroadcastChannel();
   }
 
@@ -226,6 +247,7 @@ class WebSocketManager {
    * resolve once the socket is OPEN.
    */
   async tryConnect() {
+    this.reopen();
     const connection = this.getCurrentConnection();
     if (!connection) {
       consola.error("WebSocketManager::tryConnect - no current_drive_user_id");
@@ -390,6 +412,7 @@ class WebSocketManager {
    *   fail the upload instead of waiting for an answer that cannot come
    */
   sendMessage(message) {
+    this.reopen();
     const connection = this.getCurrentConnection();
     if (!connection) {
       consola.error(
@@ -575,6 +598,7 @@ class WebSocketManager {
    * @returns {Promise<boolean>} - true if ready to send messages
    */
   async ensureConnected() {
+    this.reopen();
     const current_drive_user_id =
       useDriveStore.getState().current_drive_user_id || "";
 
@@ -635,6 +659,8 @@ class WebSocketManager {
    * Cleanup resources
    */
   cleanup() {
+    this.closed = true;
+
     // Disconnect all connections
     for (const [_userId, connection] of this.connections) {
       connection.disconnect();
