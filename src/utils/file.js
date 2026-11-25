@@ -4,6 +4,7 @@ import { ERROR_CODE } from "../enum/error";
 import { ALLOWED_FILE_TYPES, FILE_TYPE, MAX_FILE_SIZE } from "../enum/file";
 import { SNIFF_BYTES, mayBeGenotypeType, sniffGenotypeHeader } from "./genotypeFormat.js";
 import consola from "consola";
+import { pickFiles } from "./filePicker.js";
 
 export const getFileType = (file_type) => {
   if (!file_type) {
@@ -70,11 +71,7 @@ export const isExcelFile = (filename, contentType) => {
 export const openSelectFileDialog = (accept = "*/*") => {
   return new Promise((resolve, reject) => {
     try {
-      const fileInput = document.createElement("input");
-      fileInput.type = "file";
-      fileInput.multiple = true;
-      fileInput.accept = accept;
-      fileInput.onchange = (e) => {
+      pickFiles(accept, (e) => {
         const _files = [];
         for (const file of e.target.files) {
           _files.push({
@@ -86,23 +83,11 @@ export const openSelectFileDialog = (accept = "*/*") => {
           });
         }
         resolve(_files);
-      };
-      fileInput.click();
+      });
     } catch (error) {
       reject(error);
     }
   });
-};
-
-export const openSelectFileDialogCallback = (callback) => {
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.multiple = true;
-  fileInput.accept = "*/*";
-  fileInput.onchange = (e) => {
-    callback(e);
-  };
-  fileInput.click();
 };
 
 export const formatFileSize = (size, locale = "en") => {

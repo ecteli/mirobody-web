@@ -59,12 +59,16 @@ describe("protectedFile", () => {
   let openProtectedFile;
   let resolveFileUrl;
   let FILE_FETCH_TIMEOUT_MS;
+  let viewer;
 
   beforeEach(async () => {
     vi.stubGlobal("localStorage", makeStorage());
     vi.stubGlobal("sessionStorage", makeStorage());
     vi.resetModules();
     ({ openProtectedFile, resolveFileUrl, FILE_FETCH_TIMEOUT_MS } = await import("./protectedFile.js"));
+    // Same module registry as the helper's own import, so the same store.
+    const { useFileViewStore } = await import("../store/fileView.js");
+    viewer = () => useFileViewStore.getState();
   });
 
   afterEach(() => {
@@ -104,7 +108,6 @@ describe("protectedFile", () => {
       localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
       const fetchSpy = vi.fn(async () => fileResponse(PDF, "application/pdf"));
       vi.stubGlobal("fetch", fetchSpy);
-      vi.stubGlobal("window", { open: () => ({ location: "" }) });
       vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
       vi.stubGlobal("Blob", class { constructor(parts, opts) { this.type = opts?.type; } });
       vi.stubGlobal("setTimeout", () => 0);
@@ -121,13 +124,14 @@ describe("protectedFile", () => {
       // 404 is also what "someone else's file" returns — the backend answers
       // both identically so a key cannot be probed for existence.
       localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
-      vi.stubGlobal("window", { open: () => ({ close: () => {} }) });
 
       vi.stubGlobal("fetch", async () => ({ ok: false, status: 401 }));
       expect(await openProtectedFile("uploads/a.pdf")).toBe("file_view_unauthorized");
+      expect(viewer().view).toBeNull();
 
       vi.stubGlobal("fetch", async () => ({ ok: false, status: 404 }));
       expect(await openProtectedFile("uploads/a.pdf")).toBe("file_view_unavailable");
+      expect(viewer().view).toBeNull();
     });
 
     it("never hands back an executable type for an uploaded svg", async () => {
@@ -139,7 +143,6 @@ describe("protectedFile", () => {
       vi.stubGlobal("fetch", async () =>
         fileResponse(encode("<svg xmlns='http://www.w3.org/2000/svg'/>"), "image/svg+xml"),
       );
-      vi.stubGlobal("window", { open: () => ({ location: "" }) });
       vi.stubGlobal("document", makeDocument([]));
       vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
       vi.stubGlobal("Blob", class {
@@ -155,7 +158,6 @@ describe("protectedFile", () => {
       localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
       const types = [];
       vi.stubGlobal("fetch", async () => fileResponse(PDF, "application/pdf"));
-      vi.stubGlobal("window", { open: () => ({ location: "" }) });
       vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
       vi.stubGlobal("Blob", class {
         constructor(parts, opts) { types.push(opts?.type); }
@@ -164,6 +166,42 @@ describe("protectedFile", () => {
 
       await openProtectedFile("uploads/report.pdf", "report.pdf");
       expect(types[0]).toBe("application/pdf");
+      expect(viewer().view).toMatchObject({
+        name: "report.pdf",
+        url: "blob:x",
+        type: "application/pdf",
+      });
+    });
+
+    it.each(["labs.csv", "notes.md", "notes.txt"])("says %s is UTF-8", async (name) => {
+      localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
+      const types = [];
+      vi.stubGlobal("fetch", async () => fileResponse(encode("值,单位\n"), "text/plain"));
+      vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
+      vi.stubGlobal("Blob", class {
+        constructor(parts, opts) { types.push(opts?.type); }
+      });
+
+      await openProtectedFile(`uploads/${name}`, name);
+      expect(types).toEqual(["text/plain;charset=utf-8"]);
+    });
+
+    // A tab opened before the fetch and pointed at the blob afterwards stayed
+    // blank on iOS: opening it suspends this page (thetahealth/mirobody#361).
+    it.each([
+      ["report.pdf", "application/pdf", PDF],
+      ["scan.png", "image/png", PNG],
+    ])("shows %s in the page and opens no tab", async (name, contentType, bytes) => {
+      localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
+      const open = vi.fn();
+      vi.stubGlobal("window", { open });
+      vi.stubGlobal("fetch", async () => fileResponse(bytes, contentType));
+      vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
+      vi.stubGlobal("Blob", class { constructor() {} });
+
+      expect(await openProtectedFile(`uploads/${name}`, name)).toBeNull();
+      expect(open).not.toHaveBeenCalled();
+      expect(viewer().view.url).toBe("blob:x");
     });
 
     // A tab pointed at an octet-stream blob stayed on about:blank and saved
@@ -177,7 +215,7 @@ describe("protectedFile", () => {
         localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
         clicked = [];
         types = [];
-        open = vi.fn(() => ({ location: "" }));
+        open = vi.fn();
         vi.stubGlobal("window", { open });
         vi.stubGlobal("document", makeDocument(clicked));
         vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
@@ -196,6 +234,7 @@ describe("protectedFile", () => {
 
         expect(reason).toBeNull();
         expect(open).not.toHaveBeenCalled();
+        expect(viewer().view).toBeNull();
         expect(types).toEqual(["application/octet-stream"]);
         expect(clicked).toEqual([{ href: "blob:x", download: "you_lab_results_en_2025-03.xlsx", attached: true }]);
       });
@@ -216,53 +255,64 @@ describe("protectedFile", () => {
       });
     });
 
-    it("downloads a pdf under its name when the popup is blocked", async () => {
+    it("shows the viewer as loading before it awaits the file", async () => {
       localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
-      const clicked = [];
-      vi.stubGlobal("window", { open: () => null });
-      vi.stubGlobal("document", makeDocument(clicked));
-      vi.stubGlobal("fetch", async () => fileResponse(PDF, "application/pdf"));
-      vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
-      vi.stubGlobal("Blob", class { constructor() {} });
-      vi.stubGlobal("setTimeout", () => 0);
-
-      expect(await openProtectedFile("uploads/a.pdf", "report.pdf")).toBeNull();
-      expect(clicked).toEqual([{ href: "blob:x", download: "report.pdf", attached: true }]);
-    });
-
-    it("opens the tab before awaiting, or the popup blocker eats it", async () => {
-      localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
-      const order = [];
-      vi.stubGlobal("window", {
-        open: () => {
-          order.push("open");
-          return { location: "" };
-        },
-      });
+      let atFetch;
       vi.stubGlobal("fetch", async () => {
-        order.push("fetch");
+        atFetch = viewer().view;
         return fileResponse(PDF, "application/pdf");
       });
       vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
       vi.stubGlobal("Blob", class { constructor() {} });
-      vi.stubGlobal("setTimeout", () => 0);
 
       await openProtectedFile("uploads/a.pdf", "a.pdf");
-      expect(order).toEqual(["open", "fetch"]);
+      expect(atFetch).toMatchObject({ name: "a.pdf", url: null });
     });
 
-    // The tab is open before the request starts, so any way the request can go
-    // wrong without throwing ends with a blank tab and no toast.
+    it("stops the download, and reports nothing, when the viewer is closed first", async () => {
+      localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
+      let signal;
+      vi.stubGlobal("fetch", (_, options) => {
+        signal = options.signal;
+        return untilAborted(options.signal);
+      });
+
+      const pending = openProtectedFile("uploads/a.pdf", "a.pdf");
+      viewer().close();
+
+      expect(await pending).toBeNull();
+      expect(signal.aborted).toBe(true);
+    });
+
+    it("lets a second file take the viewer and frees the first one's bytes", async () => {
+      localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
+      const revoked = [];
+      let n = 0;
+      vi.stubGlobal("fetch", async () => fileResponse(PDF, "application/pdf"));
+      vi.stubGlobal("URL", {
+        createObjectURL: () => `blob:${(n += 1)}`,
+        revokeObjectURL: (url) => revoked.push(url),
+      });
+      vi.stubGlobal("Blob", class { constructor() {} });
+
+      await openProtectedFile("uploads/a.pdf", "a.pdf");
+      await openProtectedFile("uploads/b.pdf", "b.pdf");
+
+      expect(viewer().view).toMatchObject({ name: "b.pdf", url: "blob:2" });
+      expect(revoked).toEqual(["blob:1"]);
+      viewer().close();
+      expect(revoked).toEqual(["blob:1", "blob:2"]);
+    });
+
+    // The viewer is open before the request starts, so any way the request
+    // can go wrong without throwing ends with it spinning and no toast.
     describe("when the answer is not the file, or never comes", () => {
-      let tab;
       let types;
 
       beforeEach(() => {
         vi.useFakeTimers();
         localStorage.setItem(ACCESS_TOKEN, "jwt-abc");
-        tab = { location: "", close: vi.fn() };
         types = [];
-        vi.stubGlobal("window", { open: () => tab });
         vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
         vi.stubGlobal("Blob", class {
           constructor(parts, opts) { types.push(opts?.type); }
@@ -285,16 +335,16 @@ describe("protectedFile", () => {
             arrayBuffer: () => untilAborted(signal),
           }),
         ],
-      ])("gives up and closes the tab when %s", async (_, fetchImpl) => {
+      ])("gives up and closes the viewer when %s", async (_, fetchImpl) => {
         vi.stubGlobal("fetch", fetchImpl);
 
         const pending = openProtectedFile("uploads/report.pdf", "report.pdf");
         await vi.advanceTimersByTimeAsync(FILE_FETCH_TIMEOUT_MS - 1);
-        expect(tab.close).not.toHaveBeenCalled();
+        expect(viewer().view).not.toBeNull();
 
         await vi.advanceTimersByTimeAsync(1);
         expect(await pending).toBe("file_view_unavailable");
-        expect(tab.close).toHaveBeenCalled();
+        expect(viewer().view).toBeNull();
       });
 
       it.each([
@@ -307,7 +357,7 @@ describe("protectedFile", () => {
         vi.stubGlobal("fetch", async () => fileResponse(INDEX_HTML, contentType));
 
         expect(await openProtectedFile(`uploads/${name}`, name)).toBe("file_view_not_file");
-        expect(tab.close).toHaveBeenCalled();
+        expect(viewer().view).toBeNull();
         expect(types).toEqual([]);
       });
 
@@ -324,8 +374,7 @@ describe("protectedFile", () => {
         vi.stubGlobal("fetch", async () => fileResponse(bytes, contentType));
 
         expect(await openProtectedFile(`uploads/${name}`, name)).toBeNull();
-        expect(tab.close).not.toHaveBeenCalled();
-        expect(tab.location).toBe("blob:x");
+        expect(viewer().view.url).toBe("blob:x");
       });
     });
   });

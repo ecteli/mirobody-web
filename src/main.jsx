@@ -2,6 +2,7 @@
 import "./utils/sentry.js";
 import { createBrowserRouter, isSentryEnabled } from "./utils/sentry.js";
 import DraggableFeedbackButton from "./components/DraggableFeedbackButton";
+import FileViewOverlay from "./components/FileViewOverlay";
 // import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router";
@@ -105,6 +106,7 @@ export default function App() {
         {contextHolder}
         {messageContextHolder}
         <RouterProvider router={router} />
+        <FileViewOverlay />
         {showFeedbackButton && <DraggableFeedbackButton />}
       </NotificationContext.Provider>
     </ConfigProvider>
