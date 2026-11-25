@@ -58,6 +58,9 @@ dayjs.extend(timezone);
 /* initialize i18n */
 initializeI18n();
 
+// English for anything unmatched, the same as i18next's fallbackLng: a page
+// whose copy fell back to English must not print its dates and antd
+// widgets in another language.
 const syncDayjsLocale = (language) => {
   const locale = {
     [LANGUAGE_CODE.EN]: "en",
@@ -65,7 +68,7 @@ const syncDayjsLocale = (language) => {
     [LANGUAGE_CODE.ZH_CN]: "zh-cn",
     [LANGUAGE_CODE.ZH_TW]: "zh-tw",
     [LANGUAGE_CODE.JA]: "ja",
-  }[language] || "ru";
+  }[language] || "en";
   dayjs.locale(locale);
 };
 syncDayjsLocale(i18nextInstance.resolvedLanguage || i18nextInstance.language);
@@ -95,7 +98,7 @@ export default function App() {
       [LANGUAGE_CODE.ZH_CN]: zhCN,
       [LANGUAGE_CODE.ZH_TW]: zhTW,
       [LANGUAGE_CODE.JA]: jaJP,
-    }[i18n.resolvedLanguage || i18n.language] || ruRU;
+    }[i18n.resolvedLanguage || i18n.language] || enUS;
   }, [i18n.language, i18n.resolvedLanguage]);
 
   return (
