@@ -9,7 +9,7 @@
  *
  * A bare `<a href="/files/...">` therefore 401s now. A browser cannot put an
  * Authorization header on a navigation, an `<img src>` or a PDF embed, so the
- * file has to be fetched by script and handed to the tab as a blob.
+ * file has to be fetched by script and handed to the page as a blob.
  *
  * **Why not `?access_token=` in the URL.** The backend accepts it, for clients
  * that genuinely cannot do this (embeds, curl). We do not use it here: a token
@@ -28,13 +28,15 @@
  * from the response, a 200 that is not the file still opened: a reverse proxy
  * that answers `/files/` with the app's own index.html, or with a login page,
  * showed an empty PDF viewer and no error. The body is checked against what
- * the file should be before a tab is pointed at it.
+ * the file should be before it is shown or saved.
  *
- * **Why there is a timeout.** The tab is open before the request starts, so a
- * request that never finishes left it on about:blank for good, with no toast.
+ * **Why there is a timeout.** The viewer shows the file as loading before the
+ * request starts, so a request that never finishes would leave it spinning for
+ * good, with no toast.
  */
 
 import { ACCESS_TOKEN } from "../enum/storage";
+import { useFileViewStore } from "../store/fileView";
 import { getApiBaseUrl } from "./index";
 
 /**
@@ -52,7 +54,15 @@ export const FILE_FETCH_TIMEOUT_MS = 60_000;
  */
 const PDF_HEADER_WINDOW = 1024;
 
-/** Types safe to render in place. Deliberately excludes svg and xml. */
+/**
+ * Types safe to render in place. Deliberately excludes svg and xml.
+ *
+ * Text says UTF-8. Without a charset the browser guessed from the page
+ * locale, and in Simplified Chinese a UTF-8 lab report opened with its
+ * punctuation as mojibake (iOS Safari, seen while checking
+ * thetahealth/mirobody#361).
+ */
+const TEXT = "text/plain;charset=utf-8";
 const INLINE_TYPES = {
   pdf: "application/pdf",
   jpg: "image/jpeg",
@@ -62,10 +72,10 @@ const INLINE_TYPES = {
   webp: "image/webp",
   bmp: "image/bmp",
   tiff: "image/tiff",
-  txt: "text/plain",
-  md: "text/plain",
-  markdown: "text/plain",
-  csv: "text/plain",
+  txt: TEXT,
+  md: TEXT,
+  markdown: TEXT,
+  csv: TEXT,
 };
 
 const extensionOf = (name = "") => {
@@ -123,30 +133,44 @@ export const resolveFileUrl = (keyOrUrl) => {
 };
 
 /**
- * Fetch a protected file and show it in a new tab, or save it when it is a
- * type that does not render in place.
+ * Fetch a protected file and show it in the page's own viewer, or save it when
+ * it is a type that does not render in place.
  *
- * The tab is opened SYNCHRONOUSLY, before the await. Opening it afterwards is
- * a popup-blocker trigger in every browser, because by then the call is no
- * longer attributable to the user's click.
+ * In the page, not in a new tab. A tab had to be opened before the await (one
+ * opened after it is what popup blockers block) and was pointed at the blob
+ * once it arrived. On a phone that tab is the whole screen: it sat on a blank
+ * about:blank, with nothing to say a file was coming, for as long as the file
+ * took (tens of seconds while thetahealth/mirobody#360 slowed photos down),
+ * and on one reporter's iPhone it never filled in (thetahealth/mirobody#361).
+ * The viewer shows progress, needs no popup, and offers the new tab as a link
+ * of its own, which the person's own tap opens.
  *
- * A type outside INLINE_TYPES gets no tab at all. Pointing a tab at an
+ * A type outside INLINE_TYPES gets no viewer. Pointing a tab at an
  * `application/octet-stream` blob left it on about:blank with nothing in the
  * downloads folder for an .xlsx (Chrome 158; thetahealth/mirobody#341): a
  * blob navigation carries no file name, so the browser had nothing to save it
- * as. An `<a download>` names the file and needs no tab.
+ * as. An `<a download>` names the file.
  *
- * @returns {Promise<null|string>} null on success, else a reason key for i18n.
+ * @returns {Promise<null|string>} null on success, or when the person closed
+ *   the viewer before the file arrived; else a reason key for i18n.
  */
 export const openProtectedFile = async (keyOrUrl, fileName = "") => {
   const token = localStorage.getItem(ACCESS_TOKEN);
   if (!token) return "file_view_unauthorized";
 
   const ext = extensionOf(fileName || keyOrUrl);
-  const inline = Boolean(INLINE_TYPES[ext]);
-  const tab = inline ? window.open("", "_blank") : null;
+  const inlineType = INLINE_TYPES[ext];
+  const name = fileName || baseNameOf(keyOrUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FILE_FETCH_TIMEOUT_MS);
+  const viewer = useFileViewStore.getState();
+  // Open at once, so the tap visibly did something while the file loads.
+  // Closing it stops the download.
+  const viewId = inlineType ? viewer.begin(name, () => controller.abort()) : null;
+  const fail = (reason) => {
+    if (viewId !== null) viewer.close(viewId);
+    return reason;
+  };
 
   try {
     const response = await fetch(resolveFileUrl(keyOrUrl), {
@@ -155,42 +179,39 @@ export const openProtectedFile = async (keyOrUrl, fileName = "") => {
     });
 
     if (!response.ok) {
-      if (tab) tab.close();
       // 404 covers "not yours" as well as "not there" — the backend answers
       // both identically on purpose, so a key cannot be probed for existence.
-      return response.status === 401
-        ? "file_view_unauthorized"
-        : "file_view_unavailable";
+      return fail(
+        response.status === 401 ? "file_view_unauthorized" : "file_view_unavailable",
+      );
     }
 
     // Still under the signal: a body that stalls after the headers leaves the
-    // tab as blank as headers that never come.
+    // viewer spinning as surely as headers that never come.
     const bytes = new Uint8Array(await response.arrayBuffer());
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
-    if (!isTheFile(ext, contentType, bytes)) {
-      if (tab) tab.close();
-      return "file_view_not_file";
-    }
+    if (!isTheFile(ext, contentType, bytes)) return fail("file_view_not_file");
 
-    const safeType = INLINE_TYPES[ext] || "application/octet-stream";
-    const url = URL.createObjectURL(new Blob([bytes], { type: safeType }));
+    const url = URL.createObjectURL(
+      new Blob([bytes], { type: inlineType || "application/octet-stream" }),
+    );
 
-    if (tab) {
-      tab.location = url;
+    if (viewId !== null) {
+      // The store revokes the URL when the viewer closes; one closed while
+      // the bytes were on their way is not there to do it.
+      if (!viewer.show(viewId, url, inlineType)) URL.revokeObjectURL(url);
     } else {
-      // Not a type to render, or the popup was blocked despite the
-      // synchronous open: save it under its own name, which needs no tab.
-      saveAs(url, fileName || baseNameOf(keyOrUrl));
+      saveAs(url, name);
+      // Long enough for the download to start; the blob is held by the
+      // browser until then and leaks memory for the session if never revoked.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     }
-
-    // Long enough for the tab to load; the blob is held by the browser until
-    // then and leaks memory for the session if never revoked.
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return null;
   } catch {
     // A timeout lands here too: the abort rejects the pending fetch or read.
-    if (tab) tab.close();
-    return "file_view_unavailable";
+    // So does the person closing the viewer, which is not a failure to report.
+    if (viewId !== null && !viewer.isOpen(viewId)) return null;
+    return fail("file_view_unavailable");
   } finally {
     clearTimeout(timer);
   }
